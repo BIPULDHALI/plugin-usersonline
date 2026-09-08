@@ -4,20 +4,6 @@ use PEAR2\Net\RouterOS\Request;
 use PEAR2\Net\RouterOS\Response;
 
 // --------------------------
-// 0. Helper Function: Fast Port Check
-// --------------------------
-if (!function_exists('isRouterReachable')) {
-    function isRouterReachable($ip, $port = 8728, $timeout = 1) {
-        $connection = @fsockopen($ip, $port, $errno, $errstr, $timeout);
-        if (is_resource($connection)) {
-            fclose($connection);
-            return true;
-        }
-        return false;
-    }
-}
-
-// --------------------------
 // Register PPPoE & Hotspot menu
 register_menu("PPPoE Online", true, "pppoe_online_ui", 'AFTER_PLANS', 'ion ion-network');
 register_menu("Hotspot Online", true, "hotspot_online_ui", 'AFTER_PLANS', 'ion ion-android-wifi');
@@ -35,14 +21,8 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/disconnect_user'){
     if(!$router) 
         exit(json_encode(['status'=>false,'msg'=>'Router not found']));
 
-    $api_port = !empty($router->api_port) ? $router->api_port : 8728;
-    if(!isRouterReachable($router->ip_address, $api_port, 1)){
-        exit(json_encode(['status'=>false,'msg'=>'Router is offline or unreachable']));
-    }
-
     try {
-        ini_set('default_socket_timeout', 2);
-        $client = Mikrotik::getClient($router->ip_address, $router->username, $router->password, 2);
+        $client = Mikrotik::getClient($router->ip_address, $router->username, $router->password);
 
         if($service == 'PPPoE'){
             $pppList = $client->sendSync(new Request('/ppp/active/print'));
@@ -79,7 +59,7 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/disconnect_user'){
 }
 
 // --------------------------
-// Single user live traffic AJAX
+// Single user live traffic (100% FIXED USING DIRECT MIKROTIK INTERFACE PROPERTY)
 if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
     $router_id = $_GET['router_id'] ?? 0;
     $username  = $_GET['username'] ?? '';
@@ -92,29 +72,24 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
 
     $traffic = ['tx'=>0,'rx'=>0,'tx_rate'=>0,'rx_rate'=>0,'tx_human'=>'0 B/s','rx_human'=>'0 B/s'];
 
-    $api_port = !empty($router->api_port) ? $router->api_port : 8728;
-    if(!isRouterReachable($router->ip_address, $api_port, 1)){
-        header('Content-Type: application/json');
-        echo json_encode($traffic);
-        exit;
-    }
-
     try {
-        ini_set('default_socket_timeout', 2);
-        $client = Mikrotik::getClient($router->ip_address, $router->username, $router->password, 2);
+        $client = Mikrotik::getClient($router->ip_address,$router->username,$router->password);
 
         if($service=='PPPoE'){
+            // ১. একটিভ পিপিইওই লিস্ট থেকে ওই ইউজারের আসল ইন্টারফেসের নাম খুঁজে বের করা
             $pppPrint = $client->sendSync(new Request('/ppp/active/print'));
             $actualIfaceName = '';
             
             foreach($pppPrint as $ppp){
                 if($ppp->getType()!==Response::TYPE_DATA) continue;
-                if(strcasecmp(trim($ppp->getProperty('name')), trim($username)) === 0){
+                if(strtolower(trim($ppp->getProperty('name'))) == strtolower(trim($username))){
+                    // মিক্রোটিক অনেক সময় 'interface' প্রোপার্টিতে আসল ইন্টারফেসের ডাইনামিক নাম দেয়
                     $actualIfaceName = $ppp->getProperty('interface');
                     break;
                 }
             }
 
+            // ২. যদি একটিভ প্রিন্ট থেকে ইন্টারফেসের নাম না পাওয়া যায়, তবে ব্যাকআপ হিসেবে স্ট্যান্ডার্ড ফরমেট ট্রাই করবে
             $ifaceStats = $client->sendSync((new Request('/interface/print'))->setArgument('stats',true));
             $ifaceData = [];
             
@@ -123,6 +98,7 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
                 $name = $iface->getProperty('name');
                 if(!$name) continue;
                 
+                // সব নাম লোয়ারকেস ও ক্লিন করে ম্যাপ করা হচ্ছে
                 $cleanName = strtolower(trim($name, "<> "));
                 $ifaceData[$cleanName] = [
                     'tx_total' => (int)($iface->getProperty('tx-byte')??0),
@@ -132,23 +108,31 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
                 ];
             }
 
+            // ম্যাচিং প্রায়োরিটি লজিক
             $matchedData = null;
             if(!empty($actualIfaceName)){
                 $cleanActualName = strtolower(trim($actualIfaceName, "<> "));
-                $matchedData = $ifaceData[$cleanActualName] ?? null;
+                if(isset($ifaceData[$cleanActualName])){
+                    $matchedData = $ifaceData[$cleanActualName];
+                }
             }
             
+            // ব্যাকআপ ম্যাচিং (যদি ডাইনামিক ইন্টারফেসের নাম না মিলে)
             if(!$matchedData){
                 $backupName = "pppoe-" . strtolower(trim($username));
-                $matchedData = $ifaceData[$backupName] ?? null;
+                if(isset($ifaceData[$backupName])){
+                    $matchedData = $ifaceData[$backupName];
+                }
             }
 
             if($matchedData){
+                // মিক্রোটিক ইন্টারফেস পার্সপেক্টিভ ফিক্স (TX = Router Out/Download, RX = Router In/Upload)
                 $traffic['tx'] = $matchedData['tx_total'];
                 $traffic['rx'] = $matchedData['rx_total'];
                 $tx_rate = $matchedData['tx_rate'];
                 $rx_rate = $matchedData['rx_rate'];
 
+                // সেশন ভিত্তিক সেফটি নেট (যদি মিক্রোটিক রেট ০ পাঠায়)
                 if($tx_rate == 0 && $rx_rate == 0){
                     if(session_status()!==PHP_SESSION_ACTIVE) session_start();
                     $key = 'pppoe_rate_'.$router_id.'_'.strtolower(trim($username));
@@ -172,7 +156,7 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
             $hsList = $client->sendSync(new Request('/ip/hotspot/active/print'));
             foreach($hsList as $hs){
                 if($hs->getType()!==Response::TYPE_DATA) continue;
-                if(strcasecmp(trim($hs->getProperty('user')), trim($username)) === 0){
+                if(strtolower(trim($hs->getProperty('user'))) == strtolower(trim($username))){
                     $traffic['tx'] = (int)($hs->getProperty('bytes-out') ?? 0);
                     $traffic['rx'] = (int)($hs->getProperty('bytes-in') ?? 0);
                     
@@ -207,7 +191,7 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
 }
 
 // --------------------------
-// Helper Functions
+// Format bytes
 function formatBytes($bytes,$precision=2){
     $units = ['B','KB','MB','GB','TB'];
     $bytes = max($bytes,0);
@@ -217,6 +201,8 @@ function formatBytes($bytes,$precision=2){
     return round($bytes,$precision).' '.$units[$pow];
 }
 
+// --------------------------
+// Format speed human readable
 function formatSpeed($bytes){
     $units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
     if($bytes<=0) return '0 B/s';
@@ -230,104 +216,83 @@ function formatSpeed($bytes){
 if(!function_exists('pppoe_online_ui')){
     function pppoe_online_ui(){
         global $ui; _admin();
-        ini_set('default_socket_timeout', 2);
-
         $ui->assign('_title','PPPoE Online Users');
         $ui->assign('_system_menu','pppoe_online');
         $admin = Admin::_info(); $ui->assign('_admin',$admin);
 
-        // ১. লগইন করা ইউজারের তথ্য বের করা (router কলামের বদলে routers ব্যবহার করা হয়েছে)
-        $logged_user = ORM::for_table('tbl_users')->select_many('routers', 'user_type')->where('id', $admin['id'])->find_one();
-        $user_router = $logged_user ? trim($logged_user->routers) : '';
-        $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
-
-        // ২. রাউটার ফিল্টারিং
-        $routerQuery = ORM::for_table('tbl_routers')->where('enabled', 1);
-
-        if (in_array($user_type, ['superadmin', 'admin']) && ($user_router == 'all' || $user_router == '0' || empty($user_router))) {
-            // SuperAdmin / Main Admin
-        } else if (!empty($user_router) && $user_router != '0' && $user_router != 'all') {
-            $routerQuery->where_raw("(id = ? OR name = ?)", [$user_router, $user_router]);
-        } else {
-            $routerQuery->where('id', 0);
-        }
-
-        $routers = $routerQuery->find_many();
+        $routers = ORM::for_table('tbl_routers')->where('enabled',1)->find_many();
         $users = [];
 
         foreach($routers as $router){
-            $api_port = !empty($router['api_port']) ? $router['api_port'] : 8728;
-
-            // রাউটার অফলাইন থাকলে দ্রুত স্কিপ করা হবে
-            if (!isRouterReachable($router['ip_address'], $api_port, 1)) {
-                continue;
-            }
+            $sock=@fsockopen($router['ip_address'],8728,$errno,$errstr,1);
+            if(!$sock) continue;
+            fclose($sock);
 
             try {
-                $client = Mikrotik::getClient($router['ip_address'], $router['username'], $router['password'], 2);
+                $client = Mikrotik::getClient($router['ip_address'],$router['username'],$router['password']);
                 $pppResponse = $client->sendSync(new Request('/ppp/active/print'));
-                $ifaceResponse = $client->sendSync((new Request('/interface/print'))->setArgument('stats', true));
+                $ifaceResponse = $client->sendSync((new Request('/interface/print'))->setArgument('stats',true));
                 
                 $active_usernames = [];
-                $ppp_list = [];
-
                 foreach($pppResponse as $ppp){
-                    if($ppp->getType() === Response::TYPE_DATA){
+                    if($ppp->getType()===Response::TYPE_DATA){
                         $uname = $ppp->getProperty('name');
                         if($uname) {
-                            $uname_trim = trim($uname);
-                            $active_usernames[] = $uname_trim;
-                            $ppp_list[] = $ppp;
+                            $active_usernames[] = trim($uname);
                         }
                     }
                 }
 
-                if(empty($active_usernames)) continue;
-
-                // কাস্টমার টেবিল অপটিমাইজড ফেচ
                 $customer_map = [];
-                $custQuery = ORM::for_table('tbl_customers')
-                    ->select_many('username', 'fullname', 'address')
-                    ->where_in('username', $active_usernames);
-                
-                if (!in_array($user_type, ['superadmin'])) {
-                    $custQuery->where_raw("(admin_id = ? OR created_by = ?)", [$admin['id'], $admin['id']]);
+                if(!empty($active_usernames)){
+                    $customers = ORM::for_table('tbl_customers')
+                        ->where_in('username', $active_usernames)
+                        ->find_many();
+                    
+                    foreach($customers as $cust){
+                        $customer_map[strtolower(trim($cust->username))] = $cust;
+                    }
                 }
 
-                $customers = $custQuery->find_many();
-                foreach($customers as $cust){
-                    $customer_map[strtolower(trim($cust->username))] = $cust;
-                }
-
-                // ইন্টারফেস ডাটা হ্যাশ ম্যাপ
                 $ifaceData = [];
                 foreach($ifaceResponse as $iface){
-                    if($iface->getType() !== Response::TYPE_DATA) continue;
+                    if($iface->getType()!==Response::TYPE_DATA) continue;
                     $name = $iface->getProperty('name');
                     if(!$name) continue;
                     
                     $cleanName = strtolower(trim($name, "<> "));
                     $ifaceData[$cleanName] = [
-                        'tx_total' => (int)($iface->getProperty('tx-byte') ?? 0),
-                        'rx_total' => (int)($iface->getProperty('rx-byte') ?? 0),
-                        'tx_rate'  => (int)($iface->getProperty('tx-rate') ?? 0),
-                        'rx_rate'  => (int)($iface->getProperty('rx-rate') ?? 0),
+                        'tx_total' => (int)($iface->getProperty('tx-byte')??0),
+                        'rx_total' => (int)($iface->getProperty('rx-byte')??0),
+                        'tx_rate'  => (int)($iface->getProperty('tx-rate')??0),
+                        'rx_rate'  => (int)($iface->getProperty('rx-rate')??0),
                     ];
                 }
                 
-                foreach($ppp_list as $ppp){
+                foreach($pppResponse as $ppp){
+                    if($ppp->getType()!==Response::TYPE_DATA) continue;
+                    
                     $username = $ppp->getProperty('name');
                     $username_lc = strtolower(trim($username));
-                    $customer_info = $customer_map[$username_lc] ?? null;
+                    $actualIface = $ppp->getProperty('interface');
 
-                    if (!in_array($user_type, ['superadmin']) && !$customer_info) {
-                        continue;
+                    $customer_info = $customer_map[$username_lc] ?? null;
+                    
+                    if ($admin['user_type'] != 'SuperAdmin') {
+                        if (!$customer_info || $customer_info->created_by != $admin['id']) {
+                            continue; 
+                        }
                     }
 
-                    $actualIface = $ppp->getProperty('interface');
-                    $fullname = ($customer_info && !empty($customer_info->fullname)) ? $customer_info->fullname : $username;
-                    $address = ($customer_info && !empty($customer_info->address)) ? $customer_info->address : '-';
+                    if($customer_info){
+                        $fullname = (!empty($customer_info->fullname)) ? $customer_info->fullname : $customer_info->username;
+                        $address = (!empty($customer_info->address)) ? $customer_info->address : '-';
+                    } else {
+                        $fullname = 'Not in Database';
+                        $address = '-';
+                    }
 
+                    // ইন্টারফেস ম্যাচিং
                     $matched = null;
                     if(!empty($actualIface)){
                         $matched = $ifaceData[strtolower(trim($actualIface, "<> "))] ?? null;
@@ -367,7 +332,7 @@ if(!function_exists('pppoe_online_ui')){
 
         if(isset($_GET['ajax']) && $_GET['ajax']==1){
             header('Content-Type: application/json');
-            echo json_encode($users);
+            echo json_encode($users, JSON_PRETTY_PRINT);
             exit;
         }
 
@@ -381,84 +346,56 @@ if(!function_exists('pppoe_online_ui')){
 if(!function_exists('hotspot_online_ui')){
     function hotspot_online_ui(){
         global $ui; _admin();
-        ini_set('default_socket_timeout', 2);
-
         $ui->assign('_title','Hotspot Online Users');
         $ui->assign('_system_menu','hotspot_online');
         $admin = Admin::_info(); $ui->assign('_admin',$admin);
 
-        // ১. লগইন করা ইউজারের তথ্য বের করা (router কলামের বদলে routers ব্যবহার করা হয়েছে)
-        $logged_user = ORM::for_table('tbl_users')->select_many('routers', 'user_type')->where('id', $admin['id'])->find_one();
-        $user_router = $logged_user ? trim($logged_user->routers) : '';
-        $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
-
-        // ২. রাউটার ফিল্টারিং
-        $routerQuery = ORM::for_table('tbl_routers')->where('enabled', 1);
-
-        if (in_array($user_type, ['superadmin', 'admin']) && ($user_router == 'all' || $user_router == '0' || empty($user_router))) {
-            // SuperAdmin / Main Admin
-        } else if (!empty($user_router) && $user_router != '0' && $user_router != 'all') {
-            $routerQuery->where_raw("(id = ? OR name = ?)", [$user_router, $user_router]);
-        } else {
-            $routerQuery->where('id', 0);
-        }
-
-        $routers = $routerQuery->find_many();
+        $routers = ORM::for_table('tbl_routers')->where('enabled',1)->find_many();
         $users = [];
-        if(session_status() !== PHP_SESSION_ACTIVE) session_start();
+        if(session_status()!==PHP_SESSION_ACTIVE) session_start();
 
         foreach($routers as $router){
-            $api_port = !empty($router['api_port']) ? $router['api_port'] : 8728;
+            $sock=@fsockopen($router['ip_address'],8728,$errno,$errstr,1);
+            if(!$sock) continue;
+            fclose($sock);
 
-            // রাউটার অফলাইন থাকলে দ্রুত স্কিপ করা হবে
-            if (!isRouterReachable($router['ip_address'], $api_port, 1)) {
-                continue;
-            }
-
-            try {
-                $client = Mikrotik::getClient($router['ip_address'], $router['username'], $router['password'], 2);
+            try{
+                $client = Mikrotik::getClient($router['ip_address'],$router['username'],$router['password']);
                 $hsList = $client->sendSync(new Request('/ip/hotspot/active/print'));
                 
                 $active_usernames = [];
-                $hs_active_items = [];
-
                 foreach($hsList as $hs){
-                    if($hs->getType() === Response::TYPE_DATA){
+                    if($hs->getType()===Response::TYPE_DATA){
                         $uname = $hs->getProperty('user');
                         if($uname) {
-                            $uname_trim = trim($uname);
-                            $active_usernames[] = $uname_trim;
-                            $hs_active_items[] = $hs;
+                            $active_usernames[] = trim($uname);
                         }
                     }
                 }
 
-                if(empty($active_usernames)) continue;
-
                 $customer_map = [];
-                $custQuery = ORM::for_table('tbl_customers')
-                    ->select_many('username', 'fullname', 'address')
-                    ->where_in('username', $active_usernames);
-                
-                if (!in_array($user_type, ['superadmin'])) {
-                    $custQuery->where_raw("(admin_id = ? OR created_by = ?)", [$admin['id'], $admin['id']]);
+                if(!empty($active_usernames)){
+                    $customers = ORM::for_table('tbl_customers')
+                        ->where_in('username', $active_usernames)
+                        ->find_many();
+                    
+                    foreach($customers as $cust){
+                        $customer_map[strtolower(trim($cust->username))] = $cust;
+                    }
                 }
 
-                $customers = $custQuery->find_many();
-                foreach($customers as $cust){
-                    $customer_map[strtolower(trim($cust->username))] = $cust;
-                }
+                foreach($hsList as $hs){
+                    if($hs->getType()!==Response::TYPE_DATA) continue;
 
-                $currentTime = microtime(true);
-
-                foreach($hs_active_items as $hs){
                     $username = $hs->getProperty('user') ?? '-';
                     $username_lc = strtolower(trim($username));
                     
                     $customer_info = $customer_map[$username_lc] ?? null;
-
-                    if (!in_array($user_type, ['superadmin']) && !$customer_info) {
-                        continue;
+                    
+                    if ($admin['user_type'] != 'SuperAdmin') {
+                        if (!$customer_info || $customer_info->created_by != $admin['id']) {
+                            continue;
+                        }
                     }
 
                     $bytes_in = (int)($hs->getProperty('bytes-in') ?? 0);
@@ -466,11 +403,13 @@ if(!function_exists('hotspot_online_ui')){
                     $uptime = $hs->getProperty('uptime') ?? '-';
                     $id = $hs->getProperty('.id');
                     
-                    $fullname = ($customer_info && !empty($customer_info->fullname)) ? $customer_info->fullname : $username;
-                    $address = ($customer_info && !empty($customer_info->address)) ? $customer_info->address : '-';
+                    $fullname = ($customer_info) ? $customer_info->fullname : 'Unknown';
+                    $address = ($customer_info) ? $customer_info->address : '-';
 
                     $key = 'hotspot_traffic_'.$router['id'].'_'.$username_lc;
+
                     $tx_rate = $rx_rate = 0;
+                    $currentTime = microtime(true);
 
                     if(isset($_SESSION[$key])){
                         $prev = $_SESSION[$key];
@@ -479,7 +418,7 @@ if(!function_exists('hotspot_online_ui')){
                         $rx_rate = max(0, $bytes_in - $prev['rx']) / $timeDiff;
                     }
 
-                    $_SESSION[$key] = ['tx'=>$bytes_out, 'rx'=>$bytes_in, 'time'=>$currentTime];
+                    $_SESSION[$key] = ['tx'=>$bytes_out,'rx'=>$bytes_in,'time'=>$currentTime];
 
                     $users[] = [
                         'router_id'=>$router['id'],
@@ -508,7 +447,7 @@ if(!function_exists('hotspot_online_ui')){
 
         if(isset($_GET['ajax']) && $_GET['ajax']==1){
             header('Content-Type: application/json');
-            echo json_encode($users);
+            echo json_encode($users, JSON_PRETTY_PRINT);
             exit;
         }
 
