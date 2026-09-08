@@ -1,7 +1,7 @@
 {
   "plugins": [
     {
-      "id": "users_online",
+      "id": "plugin-usersonline",
       "name": "Users Online",
       "description": "Custom Users Online plugin for PHPNuxBill",
       "ispaid": false,
