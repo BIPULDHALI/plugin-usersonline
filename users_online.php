@@ -238,7 +238,7 @@ if(!function_exists('pppoe_online_ui')){
 
         // ১. লগইন করা ইউজারের তথ্য বের করা
         $logged_user = ORM::for_table('tbl_users')->select_many('router', 'user_type')->where('id', $admin['id'])->find_one();
-        $user_router = $logged_user ? trim($logged_user->router) : '';
+        $user_router = $logged_user ? trim($logged_user->routers) : '';
         $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
 
         // ২. রাউটার ফিল্টারিং
@@ -389,7 +389,7 @@ if(!function_exists('hotspot_online_ui')){
 
         // ১. লগইন করা ইউজারের তথ্য বের করা
         $logged_user = ORM::for_table('tbl_users')->select_many('router', 'user_type')->where('id', $admin['id'])->find_one();
-        $user_router = $logged_user ? trim($logged_user->router) : '';
+        $user_routers = $logged_user ? trim($logged_user->router) : '';
         $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
 
         // ২. রাউটার ফিল্টারিং
