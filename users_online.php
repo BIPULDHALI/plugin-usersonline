@@ -208,6 +208,7 @@ if(isset($_GET['_route']) && $_GET['_route']=='plugin/get_user_traffic'){
 
 // --------------------------
 // Helper Functions
+// --------------------------
 function formatBytes($bytes,$precision=2){
     $units = ['B','KB','MB','GB','TB'];
     $bytes = max($bytes,0);
@@ -227,6 +228,7 @@ function formatSpeed($bytes){
 
 // --------------------------
 // PPPoE Online UI
+// --------------------------
 if(!function_exists('pppoe_online_ui')){
     function pppoe_online_ui(){
         global $ui; _admin();
@@ -237,7 +239,7 @@ if(!function_exists('pppoe_online_ui')){
         $admin = Admin::_info(); $ui->assign('_admin',$admin);
 
         // ১. লগইন করা ইউজারের তথ্য বের করা
-        $logged_user = ORM::for_table('tbl_users')->select_many('router', 'user_type')->where('id', $admin['id'])->find_one();
+        $logged_user = ORM::for_table('tbl_users')->select_many('routers', 'user_type')->where('id', $admin['id'])->find_one();
         $user_router = $logged_user ? trim($logged_user->routers) : '';
         $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
 
@@ -245,7 +247,7 @@ if(!function_exists('pppoe_online_ui')){
         $routerQuery = ORM::for_table('tbl_routers')->where('enabled', 1);
 
         if (in_array($user_type, ['superadmin', 'admin']) && ($user_router == 'all' || $user_router == '0' || empty($user_router))) {
-            // SuperAdmin / Main Admin
+            // SuperAdmin / Main Admin - access all routers
         } else if (!empty($user_router) && $user_router != '0' && $user_router != 'all') {
             $routerQuery->where_raw("(id = ? OR name = ?)", [$user_router, $user_router]);
         } else {
@@ -258,7 +260,7 @@ if(!function_exists('pppoe_online_ui')){
         foreach($routers as $router){
             $api_port = !empty($router['api_port']) ? $router['api_port'] : 8728;
 
-            // রাউটার অফলাইন থাকলে দ্রুত স্কিপ করা হবে
+            // রাউটার অফলাইন থাকলে স্কিপ করা হবে
             if (!isRouterReachable($router['ip_address'], $api_port, 1)) {
                 continue;
             }
@@ -378,6 +380,7 @@ if(!function_exists('pppoe_online_ui')){
 
 // --------------------------
 // Hotspot Online UI
+// --------------------------
 if(!function_exists('hotspot_online_ui')){
     function hotspot_online_ui(){
         global $ui; _admin();
@@ -388,15 +391,15 @@ if(!function_exists('hotspot_online_ui')){
         $admin = Admin::_info(); $ui->assign('_admin',$admin);
 
         // ১. লগইন করা ইউজারের তথ্য বের করা
-        $logged_user = ORM::for_table('tbl_users')->select_many('router', 'user_type')->where('id', $admin['id'])->find_one();
-        $user_routers = $logged_user ? trim($logged_user->router) : '';
+        $logged_user = ORM::for_table('tbl_users')->select_many('routers', 'user_type')->where('id', $admin['id'])->find_one();
+        $user_router = $logged_user ? trim($logged_user->routers) : '';
         $user_type   = $logged_user ? strtolower(trim($logged_user->user_type)) : '';
 
         // ২. রাউটার ফিল্টারিং
         $routerQuery = ORM::for_table('tbl_routers')->where('enabled', 1);
 
         if (in_array($user_type, ['superadmin', 'admin']) && ($user_router == 'all' || $user_router == '0' || empty($user_router))) {
-            // SuperAdmin / Main Admin
+            // SuperAdmin / Main Admin - access all routers
         } else if (!empty($user_router) && $user_router != '0' && $user_router != 'all') {
             $routerQuery->where_raw("(id = ? OR name = ?)", [$user_router, $user_router]);
         } else {
@@ -410,7 +413,7 @@ if(!function_exists('hotspot_online_ui')){
         foreach($routers as $router){
             $api_port = !empty($router['api_port']) ? $router['api_port'] : 8728;
 
-            // রাউটার অফলাইন থাকলে দ্রুত স্কিপ করা হবে
+            // রাউটার অফলাইন থাকলে স্কিপ করা হবে
             if (!isRouterReachable($router['ip_address'], $api_port, 1)) {
                 continue;
             }
